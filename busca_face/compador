@@ -1,43 +1,129 @@
+from deepface import DeepFace
 import os
-import face_recognition
-from PIL import Image
+import re
+import shutil
+import tempfile
+import uuid
+import string
 
-# 1. Carregar a imagem de referência (a pessoa que você quer encontrar)
-referencia_img = face_recognition.load_image_file("caminho/para/foto_ref.jpg")
-try:
-    referencia_encoding = face_recognition.face_encodings(referencia_img)[0]
-except IndexError:
-    print("Nenhum rosto encontrado na imagem de referência.")
+def criar_nome_seguro(nome_original):
+    """Cria um nome de arquivo seguro removendo TODOS os caracteres não-ASCII"""
+    # Extrai a extensão do arquivo
+    nome, extensao = os.path.splitext(nome_original)
+    
+    # Remove todos os caracteres não-ASCII e mantém apenas caracteres seguros
+    nome_seguro = ''.join(
+        c for c in nome 
+        if c in string.ascii_letters or c in string.digits or c in ' _-'
+    )
+    
+    # Substitui espaços por underscores
+    nome_seguro = re.sub(r'\s+', '_', nome_seguro)
+    
+    # Remove underscores múltiplos
+    nome_seguro = re.sub(r'_{2,}', '_', nome_seguro)
+    
+    # Remove underscores no início e fim
+    nome_seguro = nome_seguro.strip('_')
+    
+    # Se o nome ficou vazio, gera um nome único
+    if not nome_seguro:
+        nome_seguro = f"file_{uuid.uuid4().hex[:8]}"
+    
+    # Garante que a extensão é válida
+    extensoes_validas = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
+    extensao = extensao.lower()
+    if extensao not in extensoes_validas:
+        extensao = '.jpg'  # Usa .jpg como padrão
+    
+    return f"{nome_seguro}{extensao}"
+
+def criar_copia_temporaria(pasta_origem):
+    """Cria uma cópia temporária da pasta com nomes de arquivos 100% válidos"""
+    temp_dir = tempfile.mkdtemp()
+    mapeamento = {}
+    
+    for nome_arquivo in os.listdir(pasta_origem):
+        caminho_original = os.path.join(pasta_origem, nome_arquivo)
+        
+        # Ignora se não for arquivo ou não for imagem
+        if not os.path.isfile(caminho_original):
+            continue
+            
+        extensao = os.path.splitext(nome_arquivo)[1].lower()
+        if extensao not in ['.jpg', '.jpeg', '.png', '.bmp', '.gif']:
+            continue
+        
+        # Gera nome seguro 100% ASCII
+        nome_seguro = criar_nome_seguro(nome_arquivo)
+        
+        # Garante que não haverá conflito de nomes
+        contador = 1
+        nome_base, ext = os.path.splitext(nome_seguro)
+        while os.path.exists(os.path.join(temp_dir, nome_seguro)):
+            nome_seguro = f"{nome_base}_{contador}{ext}"
+            contador += 1
+        
+        # Copia o arquivo
+        caminho_temp = os.path.join(temp_dir, nome_seguro)
+        shutil.copy2(caminho_original, caminho_temp)
+        
+        # Armazena o mapeamento
+        mapeamento[nome_seguro] = nome_arquivo
+    
+    return temp_dir, mapeamento
+
+# Caminho da imagem de referência
+imagem_ref = r"C:\Users\luzo.neto\Downloads\duda_its.JPG"
+
+# Pasta com todas as imagens onde procurar
+pasta_busca = r"D:\Users\luzo.neto\Downloads\fotos_perfil"
+
+# Verifica existência dos caminhos
+if not os.path.exists(imagem_ref):
+    print(f"Erro: Imagem de referência '{imagem_ref}' não encontrada.")
     exit()
 
-# Lista para armazenar resultados
-resultados = []
+if not os.path.exists(pasta_busca):
+    print(f"Erro: Pasta '{pasta_busca}' não encontrada.")
+    exit()
 
-# 2. Pasta com as imagens onde procurar
-pasta_imagens = "caminho/para/suas/imagens"
+# Cria uma cópia temporária com nomes de arquivos válidos
+print("🔄 Criando cópia temporária com nomes de arquivos 100% válidos...")
+pasta_temp, mapeamento = criar_copia_temporaria(pasta_busca)
 
-for arquivo in os.listdir(pasta_imagens):
-    caminho = os.path.join(pasta_imagens, arquivo)
-    
-    # Ignorar arquivos não-imagem
+try:
+    # Buscar rostos semelhantes na cópia temporária
+    print("🔍 Buscando rostos semelhantes...")
+    resultados = DeepFace.find(
+        img_path=imagem_ref,
+        db_path=pasta_temp,
+        detector_backend="opencv",
+        model_name="ArcFace",
+        distance_metric="cosine",
+        enforce_detection=False,
+        threshold=0.65
+    )
+
+    # Mostrar resultados com nomes originais
+    if len(resultados) > 0 and not resultados[0].empty:
+        print("\n✅ Rostos encontrados:")
+        for idx, linha in resultados[0].iterrows():
+            nome_temp = os.path.basename(linha['identity'])
+            nome_original = mapeamento.get(nome_temp, nome_temp)
+            
+            similaridade = 1 - linha['distance']
+            print(f"{nome_original} → {similaridade:.2%} de similaridade")
+    else:
+        print("❌ Nenhum rosto semelhante encontrado.")
+
+except Exception as e:
+    print(f"Erro durante a busca: {e}")
+
+finally:
+    # Limpa a pasta temporária
     try:
-        imagem = face_recognition.load_image_file(caminho)
-        encodings = face_recognition.face_encodings(imagem)
-    except:
-        continue
-
-    # Verificar cada rosto na imagem
-    for encoding in encodings:
-        comparacao = face_recognition.compare_faces([referencia_encoding], encoding, tolerance=0.6)
-        distancia = face_recognition.face_distance([referencia_encoding], encoding)[0]
-
-        if comparacao[0]:  # Se corresponde
-            resultados.append((arquivo, round(1 - distancia, 3)))  # Similaridade como porcentagem
-
-# 3. Ordenar por maior similaridade
-resultados.sort(key=lambda x: x[1], reverse=True)
-
-# 4. Mostrar resultados
-print("Imagens que contêm a pessoa (mais correspondentes primeiro):")
-for nome, similaridade in resultados:
-    print(f"{nome}: {similaridade * 100:.1f}% de similaridade")
+        shutil.rmtree(pasta_temp)
+        print(f"🧹 Pasta temporária {pasta_temp} removida.")
+    except Exception as e:
+        print(f"⚠️ Erro ao remover pasta temporária: {e}")
