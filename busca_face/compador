@@ -1,0 +1,43 @@
+import os
+import face_recognition
+from PIL import Image
+
+# 1. Carregar a imagem de referência (a pessoa que você quer encontrar)
+referencia_img = face_recognition.load_image_file("caminho/para/foto_ref.jpg")
+try:
+    referencia_encoding = face_recognition.face_encodings(referencia_img)[0]
+except IndexError:
+    print("Nenhum rosto encontrado na imagem de referência.")
+    exit()
+
+# Lista para armazenar resultados
+resultados = []
+
+# 2. Pasta com as imagens onde procurar
+pasta_imagens = "caminho/para/suas/imagens"
+
+for arquivo in os.listdir(pasta_imagens):
+    caminho = os.path.join(pasta_imagens, arquivo)
+    
+    # Ignorar arquivos não-imagem
+    try:
+        imagem = face_recognition.load_image_file(caminho)
+        encodings = face_recognition.face_encodings(imagem)
+    except:
+        continue
+
+    # Verificar cada rosto na imagem
+    for encoding in encodings:
+        comparacao = face_recognition.compare_faces([referencia_encoding], encoding, tolerance=0.6)
+        distancia = face_recognition.face_distance([referencia_encoding], encoding)[0]
+
+        if comparacao[0]:  # Se corresponde
+            resultados.append((arquivo, round(1 - distancia, 3)))  # Similaridade como porcentagem
+
+# 3. Ordenar por maior similaridade
+resultados.sort(key=lambda x: x[1], reverse=True)
+
+# 4. Mostrar resultados
+print("Imagens que contêm a pessoa (mais correspondentes primeiro):")
+for nome, similaridade in resultados:
+    print(f"{nome}: {similaridade * 100:.1f}% de similaridade")
